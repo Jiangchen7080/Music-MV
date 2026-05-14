@@ -12,6 +12,8 @@ export interface RenderProgress {
 
 type OnProgress = (p: RenderProgress) => void
 
+let ffmpegLogs: string[] = []
+
 function formatTime(seconds: number): string {
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
@@ -60,18 +62,11 @@ async function downloadClips(
       await ff.writeFile(filename, data)
       clipFiles.push(filename)
     } catch {
-      const filename = `clip_${i}.mp4`
-      const blackVideo = await createBlackFrame(ff, segments[i].duration)
-      await ff.writeFile(filename, new Uint8Array(blackVideo))
-      clipFiles.push(filename)
+      clipFiles.push(`clip_${i}.mp4`)
     }
   }
 
   return clipFiles
-}
-
-async function createBlackFrame(_ff: FFmpeg, _duration: number): Promise<Uint8Array> {
-  return new Uint8Array(0)
 }
 
 export async function renderVideo(
@@ -80,6 +75,8 @@ export async function renderVideo(
   config: GenerateConfig,
   onProgress: OnProgress
 ): Promise<Blob> {
+  ffmpegLogs = []
+
   onProgress({ stage: 'ffmpeg-load', progress: 0, detail: '加载 FFmpeg 引擎...' })
 
   const ff = await getFFmpeg((p) => {
@@ -88,6 +85,10 @@ export async function renderVideo(
       progress: Math.round(p.percent * 0.3),
       detail: p.stage === 'download-core' ? '下载 FFmpeg 核心文件...' : '初始化引擎...',
     })
+  })
+
+  ff.on('log', ({ message }) => {
+    ffmpegLogs.push(message)
   })
 
   onProgress({ stage: 'ffmpeg-load', progress: 30, detail: 'FFmpeg 引擎已就绪' })
@@ -103,20 +104,18 @@ export async function renderVideo(
 
   onProgress({ stage: 'download-clips', progress: 100, detail: '素材下载完成' })
 
-  onProgress({ stage: 'render', progress: 0, detail: '生成字幕文件...' })
+  onProgress({ stage: 'render', progress: 0, detail: '准备渲染...' })
 
   const srtContent = buildSRT(segments)
   await ff.writeFile('subtitles.srt', srtContent)
-
-  onProgress({ stage: 'render', progress: 5, detail: '正在渲染视频...' })
 
   const audioData = await fetchFile(audioFile)
   await ff.writeFile('audio.mp3', audioData)
 
   const scaleFilter = `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1`
 
-  let filterParts: string[] = []
-  let inputLabels: string[] = []
+  const filterParts: string[] = []
+  const inputLabels: string[] = []
 
   clipFiles.forEach((_, i) => {
     filterParts.push(`[${i}:v]${scaleFilter}[v${i}]`)
@@ -131,37 +130,28 @@ export async function renderVideo(
     inputArgs.push('-i', f)
   })
 
+  const audioInputIndex = clipFiles.length
+
   ff.on('progress', ({ progress: p }) => {
-    const percent = Math.round(p * 80)
     onProgress({
       stage: 'render',
-      progress: 5 + Math.round(percent * 0.9),
+      progress: 5 + Math.round(p * 90),
       detail: `视频渲染中 ${Math.round(p * 100)}%`,
     })
   })
 
-  try {
-    await ff.exec([
-      ...inputArgs,
-      '-filter_complex', fullFilter,
-      '-map', '[vid]',
-      '-i', 'audio.mp3',
-      '-c:v', 'libx264',
-      '-c:a', 'aac',
-      '-pix_fmt', 'yuv420p',
-      '-shortest',
-      '-preset', 'ultrafast',
-      '-movflags', '+faststart',
-      '-vf', `subtitles=subtitles.srt:force_style='Fontsize=20,Alignment=2,PrimaryColour=&H00FFFFFF'`,
-      'output.mp4',
-    ])
-  } catch {
-    try {
-      await ff.exec([
+  let renderSuccess = false
+  let lastError = ''
+
+  const renderAttempts = [
+    {
+      name: 'with subtitles',
+      args: [
         ...inputArgs,
-        '-filter_complex', fullFilter,
-        '-map', '[vid]',
         '-i', 'audio.mp3',
+        '-filter_complex', `${fullFilter};[vid]subtitles=subtitles.srt:force_style='Fontsize=20,Alignment=2,PrimaryColour=&H00FFFFFF'[out]`,
+        '-map', '[out]',
+        '-map', `${audioInputIndex}:a`,
         '-c:v', 'libx264',
         '-c:a', 'aac',
         '-pix_fmt', 'yuv420p',
@@ -169,10 +159,46 @@ export async function renderVideo(
         '-preset', 'ultrafast',
         '-movflags', '+faststart',
         'output.mp4',
-      ])
+      ],
+    },
+    {
+      name: 'without subtitles',
+      args: [
+        ...inputArgs,
+        '-i', 'audio.mp3',
+        '-filter_complex', fullFilter,
+        '-map', '[vid]',
+        '-map', `${audioInputIndex}:a`,
+        '-c:v', 'libx264',
+        '-c:a', 'aac',
+        '-pix_fmt', 'yuv420p',
+        '-shortest',
+        '-preset', 'ultrafast',
+        '-movflags', '+faststart',
+        'output.mp4',
+      ],
+    },
+  ]
+
+  for (const attempt of renderAttempts) {
+    if (renderSuccess) break
+    try {
+      onProgress({
+        stage: 'render',
+        progress: 10,
+        detail: `渲染中${attempt.name !== 'with subtitles' ? '（字幕回退模式）' : ''}...`,
+      })
+      await ff.exec(attempt.args)
+      renderSuccess = true
     } catch (err) {
-      throw new Error(`视频渲染失败: ${err instanceof Error ? err.message : '未知错误'}`)
+      lastError = err instanceof Error ? err.message : String(err)
+      const logTail = ffmpegLogs.slice(-5).join(' | ')
+      lastError = `${lastError} | FFmpeg: ${logTail}`
     }
+  }
+
+  if (!renderSuccess) {
+    throw new Error(`渲染失败: ${lastError}`)
   }
 
   onProgress({ stage: 'render', progress: 95, detail: '正在打包输出文件...' })
