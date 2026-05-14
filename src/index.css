@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-surface-800;
+  }
+  body {
+    @apply bg-surface-950 text-white antialiased;
+  }
+}
+
+@layer components {
+  .step-indicator {
+    @apply flex items-center gap-2;
+  }
+  .step-dot {
+    @apply w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium;
+  }
+  .step-dot-active {
+    @apply bg-primary-500 text-white;
+  }
+  .step-dot-completed {
+    @apply bg-primary-600 text-white;
+  }
+  .step-dot-pending {
+    @apply bg-surface-800 text-surface-200;
+  }
+  .step-line {
+    @apply h-0.5 flex-1;
+  }
+  .step-line-active {
+    @apply bg-primary-500;
+  }
+  .step-line-pending {
+    @apply bg-surface-800;
+  }
+}
