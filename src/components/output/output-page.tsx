@@ -1,118 +1,220 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { Progress } from '../ui/progress'
 import { useProjectStore } from '../../stores/project-store'
 import { useConfigStore } from '../../stores/config-store'
 import { useTimelineStore } from '../../stores/timeline-store'
+import { renderVideo, type RenderProgress } from '../../services/render-engine'
 import { generateCopyrightText } from '../../utils/copyright'
-import { Download, Copy, Check, RotateCcw, Construction, Scissors } from 'lucide-react'
+import { Sparkles, Download, Film, Loader2, CheckCircle2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
+
+const stageLabels: Record<string, string> = {
+  'ffmpeg-load': '加载渲染引擎',
+  'download-clips': '下载视频素材',
+  'render': '视频渲染合成',
+  'complete': '完成',
+}
 
 export function OutputPage() {
-  const { setStep, audioFile, trimInfo } = useProjectStore()
+  const { audioFile, trimInfo, setStep } = useProjectStore()
   const { config } = useConfigStore()
   const { segments } = useTimelineStore()
-  const [copied, setCopied] = useState(false)
+  const [renderState, setRenderState] = useState<'idle' | 'rendering' | 'done' | 'error'>('idle')
+  const [progress, setProgress] = useState<RenderProgress>({ stage: 'ffmpeg-load', progress: 0, detail: '' })
+  const [outputUrl, setOutputUrl] = useState<string | null>(null)
+  const [showDetails, setShowDetails] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const outputRef = useRef<HTMLVideoElement>(null)
 
+  const isVertical = config.videoRatio === '9:16'
   const copyrightText = generateCopyrightText(segments)
+  const mvDurationLabel = config.mvDuration === 'short' ? '短版' : config.mvDuration === 'medium' ? '中版' : '全曲'
 
-  const handleCopyCopyright = async () => {
-    await navigator.clipboard.writeText(copyrightText)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  const handleRender = async () => {
+    if (!audioFile) return
+
+    setRenderState('rendering')
+    setErrorMessage(null)
+
+    try {
+      const blob = await renderVideo(segments, audioFile, config, (p) => {
+        setProgress(p)
+      })
+
+      const url = URL.createObjectURL(blob)
+      setOutputUrl(url)
+      setRenderState('done')
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : '渲染失败，请重试')
+      setRenderState('error')
+    }
   }
 
-  const totalDuration = segments.reduce((sum, s) => sum + s.duration, 0)
-  const totalClips = segments.filter((s) => s.selectedClip).length
-  const sourceStats = segments.reduce((acc, s) => {
-    if (s.selectedClip) {
-      acc[s.selectedClip.source] = (acc[s.selectedClip.source] || 0) + 1
-    }
-    return acc
-  }, {} as Record<string, number>)
+  const handleDownload = () => {
+    if (!outputUrl) return
+    const a = document.createElement('a')
+    a.href = outputUrl
+    a.download = `AI-MV_${config.videoRatio}_${mvDurationLabel}.mp4`
+    a.click()
+  }
 
-  const firstThumbnail = segments.find((s) => s.selectedClip?.thumbnail)?.selectedClip?.thumbnail
-  const isVertical = config.videoRatio === '9:16'
+  const currentStageIndex = ['ffmpeg-load', 'download-clips', 'render', 'complete'].indexOf(progress.stage)
+
+  const hasClips = segments.some(s => s.selectedClip !== null)
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>MV 概览</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <Film className="w-5 h-5 text-primary-400" />
+            导出 MV
+          </CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className={`bg-black/60 rounded-xl flex items-center justify-center overflow-hidden relative ${isVertical ? 'aspect-[9/16] max-w-[40%] mx-auto' : 'aspect-video'}`}>
-            {firstThumbnail ? (
-              <img src={firstThumbnail} alt="" className="absolute inset-0 w-full h-full object-cover opacity-30" />
-            ) : null}
-            <div className="text-center text-surface-400 relative z-10">
-              <Download className="w-16 h-16 mx-auto mb-4" />
-              <p className="text-lg font-medium text-white mb-2">{audioFile?.name?.replace(/\.[^/.]+$/, '') || '我的MV'}</p>
-              <p className="text-sm">
-                {totalDuration.toFixed(0)} 秒 · {totalClips} 个素材片段
-              </p>
-              <p className="text-xs mt-1">
-                {config.videoRatio} · {Object.entries(sourceStats).map(([s, c]) => `${s}(${c})`).join(' ')}
-              </p>
-            </div>
+        <CardContent className="space-y-4">
+          <div className={`relative rounded-xl overflow-hidden bg-black/60 ${isVertical ? 'max-w-[40%] mx-auto' : ''}`}>
+            {outputUrl ? (
+              <video
+                ref={outputRef}
+                src={outputUrl}
+                controls
+                className={`w-full ${isVertical ? 'aspect-[9/16]' : 'aspect-video'}`}
+              />
+            ) : (
+              <div className={`${isVertical ? 'aspect-[9/16] max-h-[400px]' : 'aspect-video'} flex flex-col items-center justify-center gap-3 text-surface-500`}>
+                <Film className="w-12 h-12" />
+                <p className="text-sm">渲染完成后可预览</p>
+              </div>
+            )}
           </div>
-          <div className="flex items-center justify-center gap-4 mt-3 text-xs text-surface-500">
-            <span>{config.videoRatio === '9:16' ? '竖屏' : '横屏'}</span>
+
+          <div className="flex items-center justify-center gap-4 text-xs text-surface-400">
+            <span>{isVertical ? '竖屏 9:16' : '横屏 16:9'}</span>
             <span>·</span>
-            <span>{config.mvDuration === 'full' ? '全曲' : config.mvDuration === 'short' ? '短版' : '中版'}</span>
+            <span>{mvDurationLabel}</span>
             {trimInfo && (
               <>
                 <span>·</span>
-                <span className="flex items-center gap-1">
-                  <Scissors className="w-3 h-3" />
-                  {trimInfo.description}
-                </span>
+                <span>{trimInfo.description}</span>
               </>
             )}
           </div>
-        </CardContent>
-      </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>版权声明</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <pre className="bg-surface-900 rounded-lg p-4 text-xs text-surface-300 whitespace-pre-wrap font-mono">
-            {copyrightText}
-          </pre>
-          <Button variant="secondary" size="sm" onClick={handleCopyCopyright}>
-            {copied ? (
-              <><Check className="w-3 h-3 mr-1" /> 已复制</>
-            ) : (
-              <><Copy className="w-3 h-3 mr-1" /> 复制版权说明</>
-            )}
-          </Button>
-        </CardContent>
-      </Card>
+          {renderState === 'idle' && !hasClips && (
+            <p className="text-xs text-amber-400 text-center">
+              提示：当前没有片段已分配视频素材，渲染结果可能不完整。
+            </p>
+          )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>视频合成</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-start gap-3 p-4 bg-surface-800 rounded-lg">
-            <Construction className="w-5 h-5 text-yellow-500 mt-0.5 shrink-0" />
-            <div className="text-sm text-surface-300">
-              <p className="text-white font-medium mb-1">视频合成功能开发中</p>
-              <p>当前版本已完成素材搜索、时间线编辑和配置流程。下一步将接入 FFmpeg.wasm 实现浏览器端视频渲染合成，支持 MP4 导出下载。</p>
-              <p className="mt-2 text-xs text-surface-500">预计下一阶段更新。</p>
+          {renderState === 'rendering' && (
+            <div className="space-y-4">
+              <Progress value={progress.progress} className="h-2" />
+              <div className="space-y-2">
+                {Object.entries(stageLabels).map(([stage, label]) => {
+                  const stageIndex = Object.keys(stageLabels).indexOf(stage)
+                  const isDone = stageIndex < currentStageIndex
+                  const isActive = stage === progress.stage
+
+                  return (
+                    <div key={stage} className="flex items-center gap-3 text-sm">
+                      {isDone ? (
+                        <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+                      ) : isActive ? (
+                        <Loader2 className="w-4 h-4 animate-spin text-primary-500 shrink-0" />
+                      ) : (
+                        <div className="w-4 h-4 rounded-full border border-surface-600 shrink-0" />
+                      )}
+                      <span className={isDone || isActive ? 'text-white' : 'text-surface-500'}>
+                        {label}
+                      </span>
+                      {isActive && (
+                        <span className="text-xs text-surface-400 ml-auto">{progress.detail}</span>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
             </div>
-          </div>
+          )}
+
+          {renderState === 'error' && (
+            <div className="flex flex-col items-center gap-3 text-center">
+              <AlertCircle className="w-8 h-8 text-red-400" />
+              <p className="text-sm text-red-400">{errorMessage || '渲染失败'}</p>
+            </div>
+          )}
+
+          {renderState === 'idle' && (
+            <Button className="w-full" size="lg" onClick={handleRender} disabled={!audioFile}>
+              <Sparkles className="w-4 h-4 mr-2" />
+              开始渲染 MV
+            </Button>
+          )}
+
+          {renderState === 'rendering' && (
+            <Button className="w-full" size="lg" disabled>
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              渲染中...
+            </Button>
+          )}
+
+          {renderState === 'done' && (
+            <div className="flex gap-3">
+              <Button variant="secondary" className="flex-1" onClick={() => { setRenderState('idle'); setOutputUrl(null) }}>
+                重新渲染
+              </Button>
+              <Button className="flex-1" onClick={handleDownload}>
+                <Download className="w-4 h-4 mr-2" />
+                下载 MP4
+              </Button>
+            </div>
+          )}
+
+          {renderState === 'error' && (
+            <Button className="w-full" onClick={handleRender}>
+              重试渲染
+            </Button>
+          )}
         </CardContent>
       </Card>
 
-      <div className="flex justify-between">
-        <Button variant="secondary" onClick={() => setStep('edit')}>
-          <RotateCcw className="w-4 h-4 mr-1" /> 返回编辑
-        </Button>
-        <Button size="lg" disabled>
-          <Download className="w-4 h-4 mr-1" />
-          下载视频
+      <Card>
+        <button
+          onClick={() => setShowDetails(!showDetails)}
+          className="w-full text-left"
+        >
+          <CardHeader className="p-4 pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm">素材来源 & 版权信息</CardTitle>
+              {showDetails ? <ChevronUp className="w-4 h-4 text-surface-400" /> : <ChevronDown className="w-4 h-4 text-surface-400" />}
+            </div>
+          </CardHeader>
+        </button>
+        {showDetails && (
+          <CardContent className="p-4 pt-0">
+            <div className="space-y-2">
+              {segments.map((seg, i) => {
+                const clip = seg.selectedClip
+                if (!clip) return null
+                return (
+                  <div key={seg.id} className="text-xs text-surface-400 flex items-start gap-2">
+                    <span className="text-surface-500 shrink-0">#{i + 1}</span>
+                    <span>{clip.author ? `作者: ${clip.author}` : clip.source} · {clip.license || clip.source === 'pixabay' ? 'Pixabay License' : clip.source === 'pexels' ? 'Pexels License' : 'Videvo License'}</span>
+                  </div>
+                )
+              })}
+              <p className="text-[10px] text-surface-500 mt-3 pt-2 border-t border-surface-800">
+                {copyrightText}
+              </p>
+            </div>
+          </CardContent>
+        )}
+      </Card>
+
+      <div className="flex justify-center">
+        <Button variant="ghost" onClick={() => setStep('edit')} className="text-surface-400">
+          返回编辑
         </Button>
       </div>
     </div>
