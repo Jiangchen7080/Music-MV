@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Progress } from '../ui/progress'
@@ -7,7 +7,7 @@ import { useConfigStore } from '../../stores/config-store'
 import { useTimelineStore } from '../../stores/timeline-store'
 import { renderVideo, type RenderProgress } from '../../services/render-engine'
 import { generateCopyrightText } from '../../utils/copyright'
-import { Sparkles, Download, Film, Loader2, CheckCircle2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
+import { Sparkles, Download, Film, Loader2, CheckCircle2, AlertCircle, ChevronDown, ChevronUp, XCircle } from 'lucide-react'
 
 const stageLabels: Record<string, string> = {
   'ffmpeg-load': '加载渲染引擎',
@@ -25,7 +25,15 @@ export function OutputPage() {
   const [outputUrl, setOutputUrl] = useState<string | null>(null)
   const [showDetails, setShowDetails] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [videoError, setVideoError] = useState(false)
   const outputRef = useRef<HTMLVideoElement>(null)
+  const cancelRef = useRef(false)
+
+  useEffect(() => {
+    return () => {
+      if (outputUrl) URL.revokeObjectURL(outputUrl)
+    }
+  }, [outputUrl])
 
   const isVertical = config.videoRatio === '9:16'
   const copyrightText = generateCopyrightText(segments)
@@ -34,11 +42,14 @@ export function OutputPage() {
   const handleRender = async () => {
     if (!audioFile) return
 
+    cancelRef.current = false
     setRenderState('rendering')
     setErrorMessage(null)
+    setVideoError(false)
 
     try {
       const blob = await renderVideo(segments, audioFile, config, (p) => {
+        if (cancelRef.current) throw new Error('渲染已取消')
         setProgress(p)
       })
 
@@ -46,9 +57,17 @@ export function OutputPage() {
       setOutputUrl(url)
       setRenderState('done')
     } catch (err) {
+      if (cancelRef.current) {
+        setRenderState('idle')
+        return
+      }
       setErrorMessage(err instanceof Error ? err.message : '渲染失败，请重试')
       setRenderState('error')
     }
+  }
+
+  const handleCancel = () => {
+    cancelRef.current = true
   }
 
   const handleDownload = () => {
@@ -74,17 +93,32 @@ export function OutputPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className={`relative rounded-xl overflow-hidden bg-black/60 ${isVertical ? 'max-w-[40%] mx-auto' : ''}`}>
-            {outputUrl ? (
+            {outputUrl && !videoError ? (
               <video
                 ref={outputRef}
                 src={outputUrl}
                 controls
                 className={`w-full ${isVertical ? 'aspect-[9/16]' : 'aspect-video'}`}
+                onError={() => setVideoError(true)}
               />
             ) : (
               <div className={`${isVertical ? 'aspect-[9/16] max-h-[400px]' : 'aspect-video'} flex flex-col items-center justify-center gap-3 text-surface-500`}>
-                <Film className="w-12 h-12" />
-                <p className="text-sm">渲染完成后可预览</p>
+                {renderState === 'rendering' ? (
+                  <>
+                    <Loader2 className="w-10 h-10 animate-spin text-primary-500" />
+                    <p className="text-sm text-primary-400">渲染完成后自动显示预览</p>
+                  </>
+                ) : videoError ? (
+                  <>
+                    <AlertCircle className="w-10 h-10 text-amber-400" />
+                    <p className="text-sm text-amber-400">视频预览不可用，请尝试下载</p>
+                  </>
+                ) : (
+                  <>
+                    <Film className="w-12 h-12" />
+                    <p className="text-sm">渲染完成后可预览</p>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -99,6 +133,8 @@ export function OutputPage() {
                 <span>{trimInfo.description}</span>
               </>
             )}
+            <span>·</span>
+            <span>{segments.length} 个片段</span>
           </div>
 
           {renderState === 'idle' && !hasClips && (
@@ -135,6 +171,9 @@ export function OutputPage() {
                   )
                 })}
               </div>
+              <Button variant="ghost" size="sm" className="w-full text-surface-400" onClick={handleCancel}>
+                <XCircle className="w-3 h-3 mr-1" /> 取消渲染
+              </Button>
             </div>
           )}
 
@@ -161,7 +200,7 @@ export function OutputPage() {
 
           {renderState === 'done' && (
             <div className="flex gap-3">
-              <Button variant="secondary" className="flex-1" onClick={() => { setRenderState('idle'); setOutputUrl(null) }}>
+              <Button variant="secondary" className="flex-1" onClick={() => { setRenderState('idle'); setOutputUrl(null); setVideoError(false) }}>
                 重新渲染
               </Button>
               <Button className="flex-1" onClick={handleDownload}>

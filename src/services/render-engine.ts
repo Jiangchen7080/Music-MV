@@ -1,4 +1,3 @@
-import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile } from '@ffmpeg/util'
 import { getFFmpeg } from './ffmpeg-loader'
 import type { TimelineSegment } from '../types/timeline'
@@ -14,32 +13,12 @@ type OnProgress = (p: RenderProgress) => void
 
 let ffmpegLogs: string[] = []
 
-function formatTime(seconds: number): string {
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  const s = seconds % 60
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},000`
-}
-
-function escapeSRT(text: string): string {
-  return text.replace(/-->/g, '->').replace(/<[^>]*>/g, '')
-}
-
-function buildSRT(segments: TimelineSegment[]): string {
-  return segments.map((seg, i) => {
-    const startTime = formatTime(seg.startTime)
-    const endTime = formatTime(seg.startTime + seg.duration)
-    const text = escapeSRT(seg.lyricsLine || '♪')
-    return `${i + 1}\n${startTime} --> ${endTime}\n${text}\n`
-  }).join('\n')
-}
-
 function getTargetSize(ratio: string): { w: number; h: number } {
   return ratio === '9:16' ? { w: 1080, h: 1920 } : { w: 1920, h: 1080 }
 }
 
 async function downloadClips(
-  ff: FFmpeg,
+  ff: any,
   segments: TimelineSegment[],
   onProgress: OnProgress
 ): Promise<string[]> {
@@ -52,7 +31,7 @@ async function downloadClips(
     onProgress({
       stage: 'download-clips',
       progress: Math.round((i / segments.length) * 100),
-      detail: `下载素材 ${i + 1}/${segments.length}: ${clip.source}`,
+      detail: `下载素材 ${i + 1}/${segments.length}`,
     })
 
     try {
@@ -87,7 +66,7 @@ export async function renderVideo(
     })
   })
 
-  ff.on('log', ({ message }) => {
+  ff.on('log', ({ message }: { message: string }) => {
     ffmpegLogs.push(message)
   })
 
@@ -106,94 +85,72 @@ export async function renderVideo(
 
   onProgress({ stage: 'render', progress: 0, detail: '准备渲染...' })
 
-  const srtContent = buildSRT(segments)
-  await ff.writeFile('subtitles.srt', srtContent)
-
   const audioData = await fetchFile(audioFile)
   await ff.writeFile('audio.mp3', audioData)
 
-  const scaleFilter = `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1`
-
-  const filterParts: string[] = []
-  const inputLabels: string[] = []
-
-  clipFiles.forEach((_, i) => {
-    filterParts.push(`[${i}:v]${scaleFilter}[v${i}]`)
-    inputLabels.push(`[v${i}]`)
-  })
-
-  const concatFilter = `${inputLabels.join('')}concat=n=${clipFiles.length}:v=1:a=0[vid]`
-  const fullFilter = `${filterParts.join(';')};${concatFilter}`
-
-  const inputArgs: string[] = []
-  clipFiles.forEach((f) => {
-    inputArgs.push('-i', f)
-  })
-
-  const audioInputIndex = clipFiles.length
-
-  ff.on('progress', ({ progress: p }) => {
+  ff.on('progress', ({ progress: p }: { progress: number }) => {
     onProgress({
       stage: 'render',
       progress: 5 + Math.round(p * 90),
-      detail: `视频渲染中 ${Math.round(p * 100)}%`,
+      detail: `渲染中 ${Math.round(p * 100)}%`,
     })
   })
 
   let renderSuccess = false
   let lastError = ''
 
-  const renderAttempts = [
+  const strategies = [
     {
-      name: 'with subtitles',
-      args: [
-        ...inputArgs,
-        '-i', 'audio.mp3',
-        '-filter_complex', `${fullFilter};[vid]subtitles=subtitles.srt:force_style='Fontsize=20,Alignment=2,PrimaryColour=&H00FFFFFF'[out]`,
-        '-map', '[out]',
-        '-map', `${audioInputIndex}:a`,
-        '-c:v', 'libx264',
-        '-c:a', 'aac',
-        '-pix_fmt', 'yuv420p',
-        '-shortest',
-        '-preset', 'ultrafast',
-        '-movflags', '+faststart',
-        'output.mp4',
-      ],
+      name: 'concat protocol + scale',
+      build: () => {
+        const concatInput = `concat:${clipFiles.join('|')}`
+        return [
+          '-i', concatInput,
+          '-i', 'audio.mp3',
+          '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`,
+          '-c:v', 'libx264',
+          '-c:a', 'aac',
+          '-pix_fmt', 'yuv420p',
+          '-shortest',
+          '-preset', 'ultrafast',
+          '-movflags', '+faststart',
+          'output.mp4',
+        ]
+      },
     },
     {
-      name: 'without subtitles',
-      args: [
-        ...inputArgs,
-        '-i', 'audio.mp3',
-        '-filter_complex', fullFilter,
-        '-map', '[vid]',
-        '-map', `${audioInputIndex}:a`,
-        '-c:v', 'libx264',
-        '-c:a', 'aac',
-        '-pix_fmt', 'yuv420p',
-        '-shortest',
-        '-preset', 'ultrafast',
-        '-movflags', '+faststart',
-        'output.mp4',
-      ],
+      name: 'concat protocol no scale',
+      build: () => {
+        const concatInput = `concat:${clipFiles.join('|')}`
+        return [
+          '-i', concatInput,
+          '-i', 'audio.mp3',
+          '-c:v', 'libx264',
+          '-c:a', 'aac',
+          '-pix_fmt', 'yuv420p',
+          '-shortest',
+          '-preset', 'ultrafast',
+          '-movflags', '+faststart',
+          'output.mp4',
+        ]
+      },
     },
   ]
 
-  for (const attempt of renderAttempts) {
+  for (const strategy of strategies) {
     if (renderSuccess) break
     try {
       onProgress({
         stage: 'render',
         progress: 10,
-        detail: `渲染中${attempt.name !== 'with subtitles' ? '（字幕回退模式）' : ''}...`,
+        detail: `渲染中${strategy.name !== 'concat protocol + scale' ? '（简化模式）' : ''}...`,
       })
-      await ff.exec(attempt.args)
+      await ff.exec(strategy.build())
       renderSuccess = true
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err)
-      const logTail = ffmpegLogs.slice(-5).join(' | ')
-      lastError = `${lastError} | FFmpeg: ${logTail}`
+      const logTail = ffmpegLogs.slice(-3).join(' | ')
+      lastError = `${lastError} | ${logTail}`
     }
   }
 
@@ -211,7 +168,6 @@ export async function renderVideo(
   clipFiles.forEach((f) => {
     try { ff.deleteFile(f) } catch { /* ignore */ }
   })
-  try { ff.deleteFile('subtitles.srt') } catch { /* ignore */ }
   try { ff.deleteFile('audio.mp3') } catch { /* ignore */ }
   try { ff.deleteFile('output.mp4') } catch { /* ignore */ }
 
