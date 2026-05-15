@@ -1,18 +1,34 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { FileDropzone } from './file-dropzone'
 import { useProjectStore } from '../../stores/project-store'
 import { parseLyrics } from '../../utils/lyrics-parser'
-import { Music, FileText, Palette } from 'lucide-react'
+import { Music, FileText, Play, Pause } from 'lucide-react'
 
 export function UploadPage() {
-  const { audioFile, setAudioFile, setOriginalAudioFile, setLyrics, setStep, styleDescription, setStyleDescription } = useProjectStore()
+  const { audioFile, audioUrl, setAudioFile, setOriginalAudioFile, setLyrics, setStep, styleDescription, setStyleDescription } = useProjectStore()
   const [lyricsFile, setLyricsFile] = useState<File | null>(null)
   const [lyricsText, setLyricsText] = useState('')
   const [lyricsMode, setLyricsMode] = useState<'file' | 'text'>('file')
   const [noLyrics, setNoLyrics] = useState(false)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const audioRef = useRef<HTMLAudioElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    setIsPlaying(false)
+  }, [audioFile])
+
+  const togglePlay = () => {
+    if (!audioRef.current) return
+    if (isPlaying) {
+      audioRef.current.pause()
+    } else {
+      audioRef.current.play()
+    }
+    setIsPlaying(!isPlaying)
+  }
 
   const handleLyricsFile = (file: File) => {
     setLyricsFile(file)
@@ -55,6 +71,21 @@ export function UploadPage() {
             }}
             currentFile={audioFile}
           />
+          {audioFile && audioUrl && (
+            <div className="mt-4 flex items-center gap-4 bg-surface-900 rounded-lg p-4">
+              <button
+                onClick={togglePlay}
+                className="w-10 h-10 rounded-full bg-primary-500 hover:bg-primary-400 flex items-center justify-center transition-colors shrink-0"
+              >
+                {isPlaying ? <Pause className="w-5 h-5 text-white" /> : <Play className="w-5 h-5 text-white ml-0.5" />}
+              </button>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-surface-200 truncate">{audioFile.name}</p>
+                <p className="text-xs text-surface-400">{(audioFile.size / 1024 / 1024).toFixed(1)} MB</p>
+              </div>
+              <audio ref={audioRef} src={audioUrl} onEnded={() => setIsPlaying(false)} className="hidden" />
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -105,7 +136,7 @@ export function UploadPage() {
 
               {lyricsMode === 'file' ? (
                 <FileDropzone
-                  accept=".lrc,.txt,.srt,.lrc,.txt,.srt"
+                  accept=".lrc,.txt,.srt"
                   label="上传歌词文件（LRC / TXT / SRT）"
                   icon="text"
                   onFile={handleLyricsFile}

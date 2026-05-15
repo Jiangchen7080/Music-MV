@@ -4,6 +4,7 @@ import { useConfigStore } from '../../stores/config-store'
 import { useProjectStore } from '../../stores/project-store'
 import type { GenerateMode, VideoRatio, Quality, MvDuration, SubtitleStyle, ClipLength } from '../../types/config'
 import type { VideoSource } from '../../types/video-clip'
+import { Zap, Sparkles } from 'lucide-react'
 
 const modeOptions: { value: GenerateMode; label: string; desc: string }[] = [
   { value: 'lyric-match', label: '逐句匹配', desc: '每句歌词匹配独立画面 + 卡拉OK字幕' },
@@ -47,6 +48,75 @@ const sourceOptions: { value: VideoSource; label: string }[] = [
   { value: 'videvo', label: 'Videvo' },
 ]
 
+interface Preset {
+  name: string
+  desc: string
+  icon: string
+  config: {
+    mode: GenerateMode
+    mvDuration: MvDuration
+    videoRatio: VideoRatio
+    subtitleStyle: SubtitleStyle
+    quality: Quality
+    sources: VideoSource[]
+  }
+}
+
+const presets: Preset[] = [
+  {
+    name: '短视频爆款',
+    desc: '竖屏 9:16 · 短版 · 逐句匹配 · 适合抖音/视频号',
+    icon: '📱',
+    config: {
+      mode: 'lyric-match',
+      mvDuration: 'short',
+      videoRatio: '9:16',
+      subtitleStyle: 'karaoke',
+      quality: '1080p',
+      sources: ['pixabay', 'pexels'],
+    },
+  },
+  {
+    name: '情感慢歌',
+    desc: '横屏 16:9 · 全曲 · 按主题分段 · 适合B站/YouTube',
+    icon: '🎵',
+    config: {
+      mode: 'theme-segment',
+      mvDuration: 'full',
+      videoRatio: '16:9',
+      subtitleStyle: 'center-art',
+      quality: '1080p',
+      sources: ['pixabay', 'pexels'],
+    },
+  },
+  {
+    name: '电子氛围',
+    desc: '竖屏 9:16 · 中版 · 氛围循环 · 适合短视频',
+    icon: '✨',
+    config: {
+      mode: 'atmosphere-loop',
+      mvDuration: 'medium',
+      videoRatio: '9:16',
+      subtitleStyle: 'dynamic-float',
+      quality: '1080p',
+      sources: ['pixabay', 'pexels', 'videvo'],
+    },
+  },
+  {
+    name: '古风国韵',
+    desc: '横屏 16:9 · 全曲 · 按主题分段 · 典雅风格',
+    icon: '🏮',
+    config: {
+      mode: 'theme-segment',
+      mvDuration: 'full',
+      videoRatio: '16:9',
+      subtitleStyle: 'gradient',
+      quality: '1080p',
+      sources: ['pixabay', 'pexels'],
+    },
+  },
+]
+
 function OptionGroup<T extends string>({
   title, options, value, onChange,
 }: {
@@ -84,8 +154,58 @@ export function ConfigPage() {
   const { config, updateConfig } = useConfigStore()
   const setStep = useProjectStore((s) => s.setStep)
 
+  const applyPreset = (preset: Preset) => {
+    updateConfig(preset.config)
+  }
+
   return (
     <div className="max-w-3xl mx-auto space-y-6">
+      <Card className="border-primary-500/30 bg-primary-500/5">
+        <CardContent className="pt-6">
+          <div className="flex items-start gap-4">
+            <div className="w-12 h-12 rounded-xl bg-primary-500/20 flex items-center justify-center shrink-0">
+              <Zap className="w-6 h-6 text-primary-400" />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-lg font-semibold text-white mb-1">快速出片</h3>
+              <p className="text-sm text-surface-400 mb-4">使用推荐设置一键生成，适合快速出片。想精细调整可往下配置。</p>
+              <Button
+                onClick={() => setStep('generate')}
+                size="lg"
+                className="bg-primary-500 hover:bg-primary-400 text-white"
+              >
+                <Zap className="w-4 h-4 mr-2" />
+                快速生成 MV
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-primary-400" />
+            预设模板
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {presets.map((preset) => (
+              <button
+                key={preset.name}
+                onClick={() => applyPreset(preset)}
+                className="text-left p-4 rounded-xl bg-surface-800 hover:bg-surface-700 border border-surface-700 hover:border-primary-500/50 transition-all group"
+              >
+                <span className="text-2xl block mb-2">{preset.icon}</span>
+                <p className="text-sm font-medium text-white group-hover:text-primary-300 transition-colors">{preset.name}</p>
+                <p className="text-xs text-surface-400 mt-1">{preset.desc}</p>
+              </button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle>生成模式</CardTitle>
